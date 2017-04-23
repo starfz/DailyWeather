@@ -5,6 +5,11 @@ import java.util.Calendar;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 
+import com.baidu.location.BDLocation;
+import com.baidu.location.BDLocationListener;
+import com.baidu.location.LocationClient;
+import com.baidu.location.LocationClientOption;
+import com.baidu.location.LocationClientOption.LocationMode;
 import com.dailyweather.app.R;
 import com.dailyweather.app.db.County;
 import com.dailyweather.app.db.DailyWeatherDB;
@@ -14,16 +19,13 @@ import com.dailyweather.app.util.Utility;
 
 import android.app.Activity;
 import android.app.ProgressDialog;
-import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.Resources;
-import android.location.Criteria;
-import android.location.Location;
-import android.location.LocationManager;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Message;
 import android.text.TextUtils;
-import android.util.Log;
 import android.view.View;
 import android.view.View.OnClickListener;
 import android.view.Window;
@@ -71,12 +73,28 @@ public class MainActivity extends Activity implements OnClickListener {
 	private ProgressDialog pd_getlocation;
 	
 	private CountDownLatch count;
-
-	private String provider;
-	private LocationManager locationManager;
+	
+	private LocationClient locationClient;
 	
 	private final static String WEATHER_URI = "https://api.heweather.com/v5/weather?city=";
 	private final static String WEATHER_API_KEY = "&key=c8e26f8a893a4f8a8ad72527b4d55e63&lang=zh-cn";
+	
+	private Handler handler = new Handler() {
+		@Override
+		public void handleMessage(Message msg) {
+			if(msg.what == 0) {
+				Bundle bundle = msg.getData();
+				lat_now = bundle.getFloat("lat");
+				lon_now = bundle.getFloat("lon");
+
+				county_code = getCountyCode(lat_now, lon_now);  //根据当前经纬度搜索符合的城市，获取城市编号
+				//根据城市编号，确定API接口的地址
+				String address_weather = WEATHER_URI + county_code + WEATHER_API_KEY;
+				SaveThreeDayWeather(address_weather);  //获取当前所在地城市的三日天气信息并进行显示
+				SaveNowWeather(address_weather);  //获取当前所在城市的实况天气信息并进行显示
+			}
+		}
+	};
 	
 	@Override
 	protected void onCreate(Bundle savedInstanceState) {
@@ -110,6 +128,8 @@ public class MainActivity extends Activity implements OnClickListener {
 		
 		count = new CountDownLatch(1);
 		
+		locationClient = new LocationClient(this);
+		
 		List<County> county_list = new ArrayList<County>();
 		county_list = dwDB.loadAllCounty();
 		if(county_list.size() < 2560) {//当数据库数据不全时，进行城市数据初始化操作
@@ -121,29 +141,31 @@ public class MainActivity extends Activity implements OnClickListener {
 				e.printStackTrace();
 			}
 			closePD_LoadCity(); //城市数据初始化完毕
-			showPD_GetLocation();
 			getLatAndLon();  //定位当前经纬度
-			county_code = getLocation(lat_now, lon_now);  //根据当前经纬度搜索符合的城市，获取城市编号
-			closePD_GetLocation();
-			//根据城市编号，确定API接口的地址
-			String address_weather = WEATHER_URI + county_code + WEATHER_API_KEY;
-			SaveThreeDayWeather(address_weather);  //获取当前所在地城市的三日天气信息并进行显示
-			SaveNowWeather(address_weather);  //获取当前所在城市的实况天气信息并进行显示
+//			county_code = getCountyCode(lat_now, lon_now);  //根据当前经纬度搜索符合的城市，获取城市编号
+//			//根据城市编号，确定API接口的地址
+//			String address_weather = WEATHER_URI + county_code + WEATHER_API_KEY;
+//			SaveThreeDayWeather(address_weather);  //获取当前所在地城市的三日天气信息并进行显示
+//			SaveNowWeather(address_weather);  //获取当前所在城市的实况天气信息并进行显示
 		} else {
 			String str = getIntent().getStringExtra("select_county");
 			if(!TextUtils.isEmpty(str)) { //从城市列表中过来时，county_code就是选中城市的code
 				county_code = str;
+				//根据城市编号，确定API接口的地址
+				String address_weather = WEATHER_URI + county_code + WEATHER_API_KEY;
+				SaveThreeDayWeather(address_weather);  //获取当前所在地城市的三日天气信息并进行显示
+				SaveNowWeather(address_weather);  //获取当前所在城市的实况天气信息并进行显示
 			} else {  //否则，就根据经纬度搜索
 				showPD_GetLocation();
 				getLatAndLon();  //定位当前经纬度
-				county_code = getLocation(lat_now, lon_now);  //根据当前经纬度搜索符合的城市，获取城市编号
 				closePD_GetLocation();
+//				county_code = getCountyCode(loc.getLat(), loc.getLon());  //根据当前经纬度搜索符合的城市，获取城市编号
 			}
 			
-			//根据城市编号，确定API接口的地址
-			String address_weather = WEATHER_URI + county_code + WEATHER_API_KEY;
-			SaveThreeDayWeather(address_weather);  //获取当前所在地城市的三日天气信息并进行显示
-			SaveNowWeather(address_weather);  //获取当前所在城市的实况天气信息并进行显示
+//			//根据城市编号，确定API接口的地址
+//			String address_weather = WEATHER_URI + county_code + WEATHER_API_KEY;
+//			SaveThreeDayWeather(address_weather);  //获取当前所在地城市的三日天气信息并进行显示
+//			SaveNowWeather(address_weather);  //获取当前所在城市的实况天气信息并进行显示
 		}
 		
 		home.setOnClickListener(this);
@@ -334,33 +356,102 @@ public class MainActivity extends Activity implements OnClickListener {
 	
 	//获取当前位置所在的经纬度
 	public void getLatAndLon() {
-		locationManager = (LocationManager)getSystemService(Context.LOCATION_SERVICE);
-//		List<String> providerList = locationManager.getProviders(true);
-//		if(providerList.contains(LocationManager.GPS_PROVIDER)) {
-//			provider = LocationManager.GPS_PROVIDER;
-//		} else if(providerList.contains(LocationManager.NETWORK_PROVIDER)) {
-//			provider = LocationManager.NETWORK_PROVIDER;
+		initLocation();
+		locationClient.registerLocationListener(new BDLocationListener() {
+			@Override
+			public void onReceiveLocation(BDLocation location) {
+				lat_now = (float)location.getLatitude();
+				lon_now = (float)location.getLongitude();
+//				Toast.makeText(MainActivity.this, location.getLocType() + "_" + lat_now + "x" + lon_now, Toast.LENGTH_SHORT).show();
+				//将异步信息返回到主线程中，供主线程使用
+				Message msg = new Message();
+				msg.what = 0;
+				Bundle bundle = new Bundle();
+				bundle.putFloat("lat", lat_now);
+				bundle.putFloat("lon", lon_now);
+				msg.setData(bundle);
+				handler.sendMessage(msg);
+			}
+			
+			@Override
+			public void onConnectHotSpotMessage(String connectWifiMac, int hotSpotState) {
+				
+			}
+		});
+		locationClient.start();
+//		locationClient.requestLocation();
+		
+//		Toast.makeText(this, lat_now + "x" + lon_now, Toast.LENGTH_SHORT).show();
+		
+//		locationManager = (LocationManager)getSystemService(Context.LOCATION_SERVICE);
+//		
+//		provider = locationManager.getBestProvider(new Criteria(), true);
+//		Location location = locationManager.getLastKnownLocation(provider);
+//		if(location != null) {
+//			lat_now = (float)location.getLatitude();
+//			lon_now = (float)location.getLongitude();
+//			Log.d("MainActivity", lat_now + "x" + lon_now);
+//		Toast.makeText(this, lat_now + "x" + lon_now, Toast.LENGTH_SHORT).show();
 //		} else {
 //			Toast.makeText(this, "无法获取地理位置信息", Toast.LENGTH_SHORT).show();
-//			return;
 //		}
+//		
+//		final LocationListener listener = new LocationListener() {
+//			@Override
+//			public void onStatusChanged(String provider, int status, Bundle extras) {
+//				
+//			}
+//			
+//			@Override
+//			public void onProviderEnabled(String provider) {
+//				
+//			}
+//			
+//			@Override
+//			public void onProviderDisabled(String provider) {
+//				
+//			}
+//			
+//			@Override
+//			public void onLocationChanged(Location location) {
+//				if(location != null) {
+//					lat_now = (float)location.getLatitude();
+//					lon_now = (float)location.getLongitude();
+//				}
+//			}
+//		};
+//		
+//		locationManager.requestLocationUpdates(provider, 1000, 1, listener);
 		
-		provider = locationManager.getBestProvider(new Criteria(), true);
-		
-		Location location = locationManager.getLastKnownLocation(provider);
-		Toast.makeText(this, lat_now + "-" + lon_now, Toast.LENGTH_SHORT).show();
-		if(location != null) {
-			lat_now = (float)location.getLatitude();
-			lon_now = (float)location.getLongitude();
-			Log.d("MainActivity", lat_now + "x" + lon_now);
-			Toast.makeText(this, lat_now + "x" + lon_now, Toast.LENGTH_SHORT).show();
-		} else {
-			Toast.makeText(this, "无法获取地理位置信息", Toast.LENGTH_SHORT).show();
-		}
+	}
+	
+	public void initLocation() {
+		LocationClientOption option = new LocationClientOption();
+		option.setLocationMode(LocationMode.Hight_Accuracy);
+	    //可选，默认高精度，设置定位模式，高精度，低功耗，仅设备
+	 
+	    option.setCoorType("bd09ll");
+	    //可选，默认gcj02，设置返回的定位结果坐标系
+	 
+	    option.setScanSpan(5000);
+	 
+	    option.setOpenGps(true);
+	    //可选，默认false,设置是否使用gps
+	 
+	    option.setLocationNotify(true);
+	    //可选，默认false，设置是否当GPS有效时按照1S/1次频率输出GPS结果
+	 
+	    option.setIgnoreKillProcess(false);
+	    //可选，默认true，定位SDK内部是一个SERVICE，并放到了独立进程，设置是否在stop的时候杀死这个进程，默认不杀死  
+	 
+	    option.setEnableSimulateGps(false);
+	    //可选，默认false，设置是否需要过滤GPS仿真结果，默认需要
+	 
+	    locationClient.setLocOption(option);
 	}
 	
 	//根据当前的经纬度确定所在的城市，返回城市编号
-	public String getLocation(float lat, float lon) {
+	public String getCountyCode(float lat, float lon) {
 		
 		List<County> countyList;
 		countyList = dwDB.loadAllCounty();
